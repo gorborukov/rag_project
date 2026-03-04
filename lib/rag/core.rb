@@ -28,11 +28,27 @@ module RAG
     end
 
     def generate_embedding(text)
-      @llm.embed(text: text).embedding
+      emb = @llm.embed(text: text, model: "qwen-local").embedding
+      return nil unless emb && !emb.empty?
+
+      # L2 Normalization (make the vector length exactly 1.0)
+      norm = Math.sqrt(emb.map { |x| x**2 }.sum)
+      emb.map { |x| x / norm }
     end
 
     def generate_answer(prompt)
-      @llm.complete(prompt: prompt, max_tokens: 512).completion
+      messages = [
+        { role: "user", content: prompt }
+      ]
+      
+      response = @llm.chat(
+        messages: messages, 
+        model: "qwen-local", 
+        max_tokens: 512
+      )
+      
+      # Return the parsed text
+      response.chat_completion
     end
 
     def init_db!
@@ -50,12 +66,24 @@ module RAG
       init_db!
       return if text.nil? || text.strip.empty?
       
-      embedding = generate_embedding(text)
-      @db.execute("INSERT INTO docs (text, source) VALUES (?, ?)", [text, source])
-      rowid = @db.last_insert_row_id
-      
-      packed_embedding = embedding.pack("f*")
-      @db.execute("INSERT INTO vec_docs (rowid, embedding) VALUES (?, ?)", [rowid, packed_embedding])
+      begin
+        embedding = generate_embedding(text)
+        
+        # If embedding generation failed (returned nil), skip it
+        return unless embedding
+        
+        packed_embedding = embedding.pack("f*")
+        
+        # Use a transaction. If one table fails, both rollback.
+        @db.transaction do
+          @db.execute("INSERT INTO docs (text, source) VALUES (?, ?)", [text, source])
+          rowid = @db.last_insert_row_id
+          
+          @db.execute("INSERT INTO vec_docs (rowid, embedding) VALUES (?, ?)", [rowid, packed_embedding])
+        end
+      rescue => e
+        puts "Warning: Failed to process chunk from #{source}: #{e.message}"
+      end
     end
 
     def search_similar(query, k: 3)

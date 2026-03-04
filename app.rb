@@ -1,5 +1,3 @@
-#!/usr/bin/env ruby
-
 require 'optparse'
 require_relative 'lib/rag/core'
 require_relative 'lib/rag/ingestor'
